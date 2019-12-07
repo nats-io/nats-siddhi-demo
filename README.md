@@ -1,8 +1,12 @@
-# Using NATS NATS and Siddhi for Stream Processing
+# Using NATS and Siddhi for Stream Processing
 
 The [Siddhi.io](https://siddhi.io) team and [NATS](https://nats.io) team have
 collaborated to create this demonstration using NATS JetStream with Siddhi
 to provide a high performance, highly scalable stream processing solution.
+
+## :warning: WIP
+
+This is a work in progress.
 
 ## Overview
 
