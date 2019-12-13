@@ -1,0 +1,36 @@
+@App:name("TestResultsAnalysis")
+@App:description("Analyse test data in realtime")
+
+/*
+{"data":{"description":"test","output_dir":"/tmp","payload_size":100,"count":10,"rpc_timeout":10000000000,"expected_nodes":30,"workers":1,"id":"KIFNUQDBZirrWDxFU3dmN5"},"id":"Wt7dETCRiL9PWVQ6k4XXdE",
+"source":"io.choria.choria-emulator.measure","specversion":"1.0","type":"io.choria.event.emulator.test_suite"}
+*/
+
+@source(type='nats' , destination='TEST_CONFIG',
+    @map(type='json', @attributes('$.data.description', '$.data.payload_size', '$.data.count',
+                                  '$.data.rpc_timeout','$.data.expected_nodes','$.data.workers','$.data.id')))
+define stream TestConfig (description string, payloadSize long, count int, rpcTimeout long, expectedNodes  int, workers int, suiteId string);
+
+
+/*
+{"data":{"suite_id":"KIFNUQDBZirrWDxFU3dmN5","instance":8,"time_buckets":[0,0,3,7,0,0,0,0,0,0,0,10,0,0,0,0,0,0,0,0,10],"discovered":30,"publish_duration":434070,"request_duration":204348175,
+"failed":0,"ok":30,"noresponses":0,"unexpected":0,"responded":30},"id":"7i0DoqPNS4ykasRDno63oY","source":"io.choria.choria-emulator.measure","specversion":"1.0",
+"type":"io.choria.event.emulator.test_result"}
+*/
+
+@source(type='nats' , destination='TEST_CONFIG',
+    @map(type='json', @attributes('$.data.suite_id', '$.data.instance', '$.data.discovered',
+                                  '$.data.publish_duration','$.data.request_duration','$.data.failed',
+                                  '$.data.ok','$.data.noresponses','$.data.unexpected','$.data.responded', '$.data.time_buckets')))
+define stream TestResult (suiteId string, instance int, discovered int, publishDuration long, requestDuration  long, failed int, ok int, noresponses int,
+                          unexpected int, responded int, timeBuckets string);
+
+
+from TestResult as R join TestConfig as C
+    on R.suiteId == C.suiteId
+select R.suiteId, description, payloadSize, count, rpcTimeout, expectedNodes, workers, instance, discovered, publishDuration, requestDuration, failed, ok, noresponses, unexpected, responded, timeBuckets
+insert into TestInfoStream;
+
+from TestInfoStream [expectedNodes != discovered]
+select suiteId, description,instance, str:concat("Expected nodes ", convert(expectedNodes, 'string'), ", but discovered ", convert(discovered, 'string'), "!") as message
+insert into AlertStream;
