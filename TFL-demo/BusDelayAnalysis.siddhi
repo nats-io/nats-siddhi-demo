@@ -1,0 +1,73 @@
+@App:name("BusDelayAnalysis")
+@App:description("Bus Delay Analysis based on TFL data.")
+
+@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/stoppoints', method='GET', sink.id='stops',
+        @map(type='json'))
+define stream RouteStream(routeNo string);
+
+--@sink(type='log')
+@source(type='http-call-response', sink.id='stops',
+        @map(type='json', @attributes('trp:routeNo', 'id', 'commonName')))
+define stream BusStopsStream(routeNo string, stopId string, stopName string);
+
+@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/timetable/{{stopId}}', method='GET', sink.id='timetable',
+        @map(type='json'))
+define stream TimeTableRequestStream(routeNo string, stopId string);
+
+@source(type='http-call-response', sink.id='timetable',
+        @map(type='json', enclosing.element='$.timetable.routes[0].schedules',
+            @attributes('trp:routeNo', 'trp:stopId', 'name', 'knownJourneys')))
+define stream TimeTableResponseStream(routeNo string, stopId string, dayRange string, knownJourneys string);
+
+define table BusTimeTable(routeNo string, stopId string, dayRange string, hour int, minute int);
+
+-- @sink(type='log')
+-- define stream TimeTable(routeNo string, stopId string, dayRange string, hour int, minute int);
+-- define stream TimeTable(routeNo string, stopId string, dayRange string, jsonElement string);
+
+@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/arrivals', method='GET', sink.id='arrivals',
+        @map(type='json'))
+define stream ArrivalRouteStream(routeNo string);
+
+
+@source(type='http-call-response', sink.id='arrivals',
+        @map(type='json', @attributes('trp:routeNo', 'naptanId', 'stationName', 'expectedArrival', 'timeToLive', 'timeToStation')))
+define stream ArrivalsResponseStream(routeNo string, stopId string, stopName string, expectedArrival string, timeToLive string,
+                                timeToStation int);
+
+@sink(type='log')
+define stream ArrivalAnalysisStream(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+from BusStopsStream
+select routeNo, stopId
+insert into TimeTableRequestStream;
+
+from TimeTableResponseStream[not (knownJourneys is null)]#json:tokenize(knownJourneys, '$')
+select routeNo, stopId, dayRange, json:getInt(jsonElement, 'hour') as hour,  json:getInt(jsonElement, 'minute') as minute
+insert into BusTimeTable;
+
+from ArrivalsResponseStream
+select routeNo, stopId, stopName,
+        time:extract('HOUR', expectedArrival, "yyyy-MM-dd'T'HH:mm:ss'Z'") as arrivalHour,
+        time:extract('MINUTE', expectedArrival, "yyyy-MM-dd'T'HH:mm:ss'Z'") as arrivalMin,
+        time:extract('HOUR', timeToLive, "yyyy-MM-dd'T'HH:mm:ss'Z'") as timeToLiveHour,
+        time:extract('MINUTE', timeToLive, "yyyy-MM-dd'T'HH:mm:ss'Z'") as timeToLiveMin,
+        timeToStation
+insert into ArrivalsInfoStream;
+
+from ArrivalsInfoStream as A join BusTimeTable as B
+on A.routeNo == B.routeNo and  A.stopId == B.stopId
+select A.routeNo, A.stopId, A.stopName, B.hour, B.minute, A.arrivalHour, A.arrivalMin,
+       (B.hour * 60 + B.minute) - (A.arrivalHour * 60 + A.arrivalMin) as timeDiff, str:concat(A.routeNo, "-",A.stopId) as routeNoStopId
+insert into ArrivalTimeTableStream;
+
+partition with  (routeNoStopId of ArrivalTimeTableStream)
+begin
+    from ArrivalTimeTableStream
+    select routeNo, stopId, stopName, hour, minute, arrivalHour, arrivalMin,
+            math:abs(timeDiff) as timeDiff,
+            ifThenElse(timeDiff>=0, 'Ontime', "Delayed") as status
+    order by timeDiff
+    limit 1
+    insert into ArrivalAnalysisStream;
+end;
