@@ -1,0 +1,244 @@
+apiVersion: siddhi.io/v1alpha2
+kind: SiddhiProcess
+metadata:
+  name: natsdemo
+
+spec:
+  apps:
+  - script: |
+      @App:name("1.LoadBusTimeTableSchedule")
+      @App:description("Load the bus time table for a given set of stops and send it to the next level via an intermediate stream.")
+
+      /*
+          Input: CSV file which include the stop IDs.
+          Output: Push the bus schedule details to the BusScheduleStream.
+      */
+
+      @source(type='http', receiver.url='${RECEIVER_URL}', @map(type='json'))
+      define stream InputRouteStream(routeNo string);
+
+      @sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/stoppoints', method='GET', sink.id='stops',
+              @map(type='json', fail.on.missing.attribute='false'), http.status.code='200')
+      define stream RouteStream(routeNo string);
+
+      @source(type='http-call-response', sink.id='stops', http.status.code='200',
+              @map(type='json', @attributes('trp:routeNo', 'naptanId', 'commonName'), fail.on.missing.attribute='false'))
+      define stream BusStopsStream(routeNo string, stopId string, stopName string);
+
+      @source(type='http-call-response', sink.id='stops', http.status.code='400',
+              @map(type='json', fail.on.missing.attribute='false', @attributes('message:$.message')))
+      define stream BusStopsStreamFail(message string);
+
+      @sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/timetable/{{stopId}}', method='GET', sink.id='timetable',
+              @map(type='json'))
+      define stream TimeTableRequestStream(routeNo string, stopId string);
+
+      define stream TimeTableResponseStream(routeNo string, stopId string, dayRange string, knownJourneys string);
+
+      @sink(type='inMemory', topic='BusSchedule', @map(type='passThrough'))
+      define stream BusScheduleStream(routeNo string, stopId string, dayRange string, hour int, minute int);
+
+      @source(type='http-call-response', sink.id='timetable',
+              @map(type='json', @attributes(routeNo='trp:routeNo', stopId='trp:stopId', jsonPayload='$'), fail.on.missing.attribute='false'), http.status.code='200')
+      define stream TimeTableResponseUnstructuredStream(routeNo string, stopId string, jsonPayload string);
+
+      @source(type='http-call-response', sink.id='timetable',
+              @map(type='json',  @attributes('message:$.message'), fail.on.missing.attribute='false'), http.status.code='400')
+      define stream TimeTableResponseUnstructuredStreamFailures(message string);
+
+      from InputRouteStream#window.time(20 sec)
+      select routeNo
+      insert all events into RouteStream;
+
+      from BusStopsStream
+      select routeNo, stopId
+      insert into TimeTableRequestStream;
+
+      from TimeTableResponseUnstructuredStream[json:isExists(jsonPayload, '$.timetable')]#json:tokenize(jsonPayload, '$.timetable.routes[0].schedules', false)[not (jsonElement is null)]
+      select routeNo, stopId, json:getString(jsonElement, "name") as dayRange,  json:getString(jsonElement, "knownJourneys") as knownJourneys
+      insert into TimeTableResponseStream;
+
+      from TimeTableResponseStream[not (knownJourneys is null)]#json:tokenize(knownJourneys, '$')
+      select routeNo, stopId, dayRange, json:getInt(jsonElement, 'hour') as hour,  json:getInt(jsonElement, 'minute') as minute
+      insert into BusScheduleStream;
+  - script: |
+      @App:name("2.LateArrivalAnalysis")
+      @App:description("Compare bus schedule and arrival time, and calculate the delay.")
+
+      /*
+          Input: Events for BusScheduleStream.
+          Output: Calculated delay push to the BusDelayStream.
+      */
+
+      @source(type='inMemory', topic='BusSchedule', @map(type='passThrough'))
+      define stream BusScheduleStream(routeNo string, stopId string, dayRange string, hour int, minute int);
+
+      @source(type='inMemory', topic='ArrivalInfo', @map(type='passThrough'))
+      define stream ArrivalsInfoStream(routeNo string, stopId string, stopName string, arrivalHour int, arrivalMin int, timeToLiveHour int, timeToLiveMin int, timeToStation int);
+
+      @sink(type='inMemory', topic='BusDelay', @map(type='passThrough'))
+      define stream BusDelayStream(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+      define table BusTimeTable(routeNo string, stopId string, dayRange string, hour int, minute int);
+
+      from BusScheduleStream
+      select routeNo, stopId, dayRange, hour, minute
+      insert into BusTimeTable;
+
+      from ArrivalsInfoStream as A join BusTimeTable as B
+      on A.routeNo == B.routeNo and  A.stopId == B.stopId
+      select A.routeNo, A.stopId, A.stopName, B.hour, B.minute, A.arrivalHour, A.arrivalMin,
+            (B.hour * 60 + B.minute) - (A.arrivalHour * 60 + A.arrivalMin) as timeDiff, str:concat(A.routeNo, "-",A.stopId) as routeNoStopId
+      insert into ArrivalTimeTableStream;
+
+      partition with  (routeNoStopId of ArrivalTimeTableStream)
+      begin
+          from ArrivalTimeTableStream
+          select routeNo, stopId, stopName, hour, minute, arrivalHour, arrivalMin,
+                  math:abs(timeDiff) as timeDiff,
+                  ifThenElse(timeDiff>=3,"Delayed", 'Ontime') as status
+          order by timeDiff
+          limit 1
+          insert into ArrivalAnalysisStream;
+
+          from ArrivalAnalysisStream[status == "Delayed"]
+          select *
+          insert into BusDelayStream;
+      end;
+  - script: |
+      @App:name("3.Control")
+      @App:description("Trigger the process of finding the arrival information.")
+
+      /*
+          Input: HTTP request with JSON {"routeNo": "24"}.
+          Output: Send back the route number to a trigger stream.
+
+          Use the following CURL command to trigger the process.
+
+          curl --location --request POST 'http://0.0.0.0:8011/arrival' 
+              --header 'Content-Type: application/json' 
+              --data-raw '{
+              "routeNo": "24"
+              }'
+      */
+
+      define trigger ArrivalDelayCheckScheduler at every 20 sec;
+
+      @source(type='http', receiver.url='http://0.0.0.0:8011/arrival', @map(type='json'))
+      define stream InputRouteStream(routeNo string);
+
+      define table RouteTable (routeNo string);
+
+      @sink(type='inMemory', topic='ArrivalControl', @map(type='passThrough'))
+      define stream ArrivalTriggerStream(routeNo string);
+
+      from InputRouteStream
+      insert into RouteTable;
+
+      from ArrivalDelayCheckScheduler
+      join RouteTable
+      select routeNo
+      insert into ArrivalTriggerStream;
+  - script: |
+      @App:name("4.ArrivalInfo")
+      @App:description("Receive and arrange bus arrival information.")
+
+      /*
+          Input: Route numbers that need to get the arrival information.
+          Output: Calculated arrival time and push to ArrivalInfoStream.
+      */
+
+      @source(type='inMemory', topic='ArrivalControl', @map(type='passThrough'))
+      define stream ArrivalTriggerStream(routeNo string);
+
+      @sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/arrivals', method='GET', sink.id='arrivals', @map(type='json'))
+      define stream ArrivalRouteStream(routeNo string);
+
+      @source(
+          type='http-call-response', sink.id='arrivals',
+          @map(type='json', @attributes('trp:routeNo', 'naptanId', 'stationName', 'expectedArrival', 'timeToLive', 'timeToStation'), fail.on.missing.attribute='false'),
+          http.status.code='200'
+      )
+      -- @sink(type='log')
+      define stream ArrivalsResponseStream(routeNo string, stopId string, stopName string, expectedArrival string, timeToLive string, timeToStation int);
+
+      @sink(type='inMemory', topic='ArrivalInfo', @map(type='passThrough'))
+      define stream ArrivalInfoStream(routeNo string, stopId string, stopName string, arrivalHour int, arrivalMin int, timeToLiveHour int, timeToLiveMin int, timeToStation int);
+
+      from ArrivalTriggerStream
+      select *
+      insert into ArrivalRouteStream;
+
+      from ArrivalsResponseStream
+      select routeNo, stopId, stopName,
+              time:extract('HOUR', expectedArrival, "yyyy-MM-dd'T'HH:mm:ss'Z'") as arrivalHour,
+              time:extract('MINUTE', expectedArrival, "yyyy-MM-dd'T'HH:mm:ss'Z'") as arrivalMin,
+              time:extract('HOUR', timeToLive, "yyyy-MM-dd'T'HH:mm:ss'Z'") as timeToLiveHour,
+              time:extract('MINUTE', timeToLive, "yyyy-MM-dd'T'HH:mm:ss'Z'") as timeToLiveMin,
+              timeToStation
+      insert into ArrivalInfoStream;
+  - script: |
+      @App:name("5.DelayAlert")
+      @App:description("Send email alerts to the passengers.")
+
+      /*
+          Input: Delayed information about buses.
+          Output: Email alerts to the passengers, and store these details in a database.
+      */
+
+      @source(type='inMemory', topic='BusDelay', @map(type='passThrough'))
+      define stream BusDelayStream(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+      -- RDBMS data stores
+      -- @Store(type="rdbms", datasource="TFL_DB")
+      -- define table DelayDetails(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+      -- Email sink to send notifications
+      @sink(type='email', username="${EMAIL}", address="${EMAIL}", password="${EMAIL_PASSWORD}",
+            subject="Dealy Notification on Bus Route: {{routeNo}}", to="${RECEIVER_EMAIL}", port="465", ssl.enable="true", auth="true",
+            @map(type='text',
+                @payload("""
+      Hi Passengers,
+
+      Please note that there is a {{timeDiff}} min delay in bus route {{routeNo}}. The bus will arrive to {{stopName}} at {{hour}}:{{minute}}.
+
+      Thank you,
+      TFL.
+              """)))
+      @sink(type='log')
+      define stream AlertStream(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+      from BusDelayStream#unique:deduplicate(stopId, 30 sec)
+      select *
+      insert into DelayInfoStream;
+
+      from DelayInfoStream
+      select *
+      insert into AlertStream;
+
+      -- from DelayInfoStream
+      -- select *
+      -- insert into DelayDetails;
+  container:
+    env:
+    - name: RECEIVER_URL
+      value: http://0.0.0.0:8012/route
+    - name: EMAIL
+      value: <YOUR_EMAIL>
+    - name: EMAIL_PASSWORD 
+      value: <YOUR_EMAIL_PASSWORD>
+    - name: RECEIVER_EMAIL
+      value: <RECEIVER_EMAIL>
+    image: siddhiio/siddhi-runner-ubuntu:5.1.2
+  messagingSystem:
+    type: nats
+  runner: |-
+    metrics:
+      enabled: true
+    metrics.prometheus:
+      reporting:
+        prometheus:
+          - name: prometheus
+            enabled: true
+            serverURL: "http://0.0.0.0:9005"
+

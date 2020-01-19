@@ -1,0 +1,13 @@
+@App:name("0.InputRoute")
+
+@App:description("Description of the plan")
+
+@source(type='http', receiver.url='http://0.0.0.0:8012/route', @map(type='json'))
+define stream InputRouteStream(routeNo string);
+
+@sink(type='inMemory', topic='InputRoute', @map(type='passThrough'))
+define stream SendRouteStream(routeNo string);
+
+from InputRouteStream#window.time(20 sec)
+select routeNo
+insert into SendRouteStream;

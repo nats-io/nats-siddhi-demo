@@ -1,0 +1,43 @@
+@App:name("2.LateArrivalAnalysis")
+@App:description("Compare bus schedule and arrival time, and calculate the delay.")
+
+/*
+    Input: Events for BusScheduleStream.
+    Output: Calculated delay push to the BusDelayStream.
+*/
+
+@source(type='inMemory', topic='BusSchedule', @map(type='passThrough')) 
+define stream BusScheduleStream(routeNo string, stopId string, dayRange string, hour int, minute int);
+
+@source(type='inMemory', topic='ArrivalInfo', @map(type='passThrough')) 
+define stream ArrivalsInfoStream(routeNo string, stopId string, stopName string, arrivalHour int, arrivalMin int, timeToLiveHour int, timeToLiveMin int, timeToStation int);
+
+@sink(type='inMemory', topic='BusDelay', @map(type='passThrough')) 
+define stream BusDelayStream(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+define table BusTimeTable(routeNo string, stopId string, dayRange string, hour int, minute int);
+
+from BusScheduleStream
+select routeNo, stopId, dayRange, hour, minute
+insert into BusTimeTable;
+
+from ArrivalsInfoStream as A join BusTimeTable as B
+on A.routeNo == B.routeNo and  A.stopId == B.stopId
+select A.routeNo, A.stopId, A.stopName, B.hour, B.minute, A.arrivalHour, A.arrivalMin,
+      (B.hour * 60 + B.minute) - (A.arrivalHour * 60 + A.arrivalMin) as timeDiff, str:concat(A.routeNo, "-",A.stopId) as routeNoStopId
+insert into ArrivalTimeTableStream;
+
+partition with  (routeNoStopId of ArrivalTimeTableStream)
+begin
+    from ArrivalTimeTableStream
+    select routeNo, stopId, stopName, hour, minute, arrivalHour, arrivalMin,
+            math:abs(timeDiff) as timeDiff,
+            ifThenElse(timeDiff>=3,"Delayed", 'Ontime') as status
+    order by timeDiff
+    limit 1
+    insert into ArrivalAnalysisStream;
+    
+    from ArrivalAnalysisStream[status == "Delayed"]
+    select *
+    insert into BusDelayStream;
+end;
