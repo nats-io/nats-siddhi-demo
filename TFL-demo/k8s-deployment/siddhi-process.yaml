@@ -6,7 +6,7 @@ metadata:
 spec:
   apps:
   - script: |
-      @App:name("1.LoadBusTimeTableSchedule")
+      @App:name("1.LoadBusTimeSchedule")
       @App:description("Load the bus time table for a given set of stops and send it to the next level via an intermediate stream.")
 
       /*
@@ -14,8 +14,17 @@ spec:
           Output: Push the bus schedule details to the BusScheduleStream.
       */
 
-      @source(type='http', receiver.url='${RECEIVER_URL}', @map(type='json'))
-      define stream InputRouteStream(routeNo string);
+      define trigger InputStream at 'start';
+
+      @sink(type='http-call', downloading.enabled='false', publisher.url='https://raw.githubusercontent.com/BuddhiWathsala/nats-demo-csv/master/stops.csv', method='GET', sink.id='download-file', @map(type='json'))
+      define stream RequestStream (destination String, sourceFile string);
+
+      @source(type='http-call-response' , sink.id='download-file', http.status.code='200', @map(type='csv', event.grouping.enabled='true'))
+      define stream ResponseStream2xx(routeNo string, bound string, id string, name string, lat double, lon double);
+
+      @source(type='http-call-response' , sink.id='download-file', http.status.code='400' ,
+      @map(type='text', regex.A='((.|n)*)', @attributes(message='A[1]')))
+      define stream ResponseStream4xx(message string);
 
       @sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/stoppoints', method='GET', sink.id='stops',
               @map(type='json', fail.on.missing.attribute='false'), http.status.code='200')
@@ -46,7 +55,11 @@ spec:
               @map(type='json',  @attributes('message:$.message'), fail.on.missing.attribute='false'), http.status.code='400')
       define stream TimeTableResponseUnstructuredStreamFailures(message string);
 
-      from InputRouteStream#window.time(20 sec)
+      from InputStream
+      select 'abc' as destination, 'cde' as sourceFile
+      insert into RequestStream;
+
+      from ResponseStream2xx
       select routeNo
       insert all events into RouteStream;
 
@@ -122,7 +135,7 @@ spec:
               }'
       */
 
-      define trigger ArrivalDelayCheckScheduler at every 20 sec;
+      define trigger ArrivalDelayCheckScheduler at every 5 sec;
 
       @source(type='http', receiver.url='http://0.0.0.0:8011/arrival', @map(type='json'))
       define stream InputRouteStream(routeNo string);
@@ -141,6 +154,7 @@ spec:
       insert into ArrivalTriggerStream;
   - script: |
       @App:name("4.ArrivalInfo")
+      @App:statistics(reporter = 'prometheus')
       @App:description("Receive and arrange bus arrival information.")
 
       /*
@@ -179,6 +193,7 @@ spec:
       insert into ArrivalInfoStream;
   - script: |
       @App:name("5.DelayAlert")
+      @App:statistics(reporter = 'prometheus')
       @App:description("Send email alerts to the passengers.")
 
       /*
@@ -221,11 +236,9 @@ spec:
       -- insert into DelayDetails;
   container:
     env:
-    - name: RECEIVER_URL
-      value: http://0.0.0.0:8012/route
     - name: EMAIL
       value: <YOUR_EMAIL>
-    - name: EMAIL_PASSWORD 
+    - name: EMAIL_PASSWORD
       value: <YOUR_EMAIL_PASSWORD>
     - name: RECEIVER_EMAIL
       value: <RECEIVER_EMAIL>
