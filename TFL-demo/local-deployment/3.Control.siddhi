@@ -1,0 +1,33 @@
+@App:name("3.Control")
+@App:description("Trigger the process of finding the arrival information.")
+
+/*
+    Input: HTTP request with JSON {"routeNo": "24"}. 
+    Output: Send back the route number to a trigger stream.
+    
+    Use the following CURL command to trigger the process.
+    
+    curl --location --request POST 'http://0.0.0.0:8011/arrival' \
+        --header 'Content-Type: application/json' \
+        --data-raw '{
+        	"routeNo": "24"
+        }'
+*/
+
+define trigger ArrivalDelayCheckScheduler at every 20 sec;
+
+@source(type='http', receiver.url='http://0.0.0.0:8011/arrival', @map(type='json'))
+define stream InputRouteStream(routeNo string);
+
+define table RouteTable (routeNo string);
+
+@sink(type='inMemory', topic='ArrivalControl', @map(type='passThrough'))
+define stream ArrivalTriggerStream(routeNo string);
+
+from InputRouteStream
+insert into RouteTable;
+
+from ArrivalDelayCheckScheduler
+join RouteTable
+select routeNo
+insert into ArrivalTriggerStream;
