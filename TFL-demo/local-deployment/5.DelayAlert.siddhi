@@ -1,4 +1,5 @@
 @App:name("5.DelayAlert")
+@App:statistics(reporter = 'prometheus')
 @App:description("Send email alerts to the passengers.")
 
 /*

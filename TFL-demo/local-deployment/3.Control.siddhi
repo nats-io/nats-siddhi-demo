@@ -14,7 +14,7 @@
         }'
 */
 
-define trigger ArrivalDelayCheckScheduler at every 20 sec;
+define trigger ArrivalDelayCheckScheduler at every 5 sec;
 
 @source(type='http', receiver.url='http://0.0.0.0:8011/arrival', @map(type='json'))
 define stream InputRouteStream(routeNo string);

@@ -6,10 +6,19 @@
     Output: Push the bus schedule details to the BusScheduleStream.
 */
 
-@source(type='inMemory', topic='InputRoute', @map(type='passThrough'))
-define stream InputRouteStream(routeNo string);
+define trigger InputStream at 'start';
 
-@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/stoppoints', method='GET', sink.id='stops',
+@sink(type='http-call', downloading.enabled='false', publisher.url='https://raw.githubusercontent.com/BuddhiWathsala/nats-demo-csv/master/stops.csv', method='GET', sink.id='download-file', @map(type='json'))
+define stream RequestStream (destination String, sourceFile string);
+
+@source(type='http-call-response' , sink.id='download-file', http.status.code='200', @map(type='csv', event.grouping.enabled='true'))
+define stream ResponseStream2xx(routeNo string, bound string, id string, name string, lat double, lon double);
+
+@source(type='http-call-response' , sink.id='download-file', http.status.code='400' ,
+@map(type='text', regex.A='((.|\n)*)', @attributes(message='A[1]')))
+define stream ResponseStream4xx(message string);
+
+@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/stoppoints?app_id=5f318986&app_key=3d908692f8b7e55287191ddcbfb391ff', method='GET', sink.id='stops',
         @map(type='json', fail.on.missing.attribute='false'), http.status.code='200')
 define stream RouteStream(routeNo string);
 
@@ -21,7 +30,7 @@ define stream BusStopsStream(routeNo string, stopId string, stopName string);
         @map(type='json', fail.on.missing.attribute='false', @attributes('message:$.message')))
 define stream BusStopsStreamFail(message string);
 
-@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/timetable/{{stopId}}', method='GET', sink.id='timetable',
+@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/timetable/{{stopId}}?app_id=5f318986&app_key=3d908692f8b7e55287191ddcbfb391ff', method='GET', sink.id='timetable',
         @map(type='json'))
 define stream TimeTableRequestStream(routeNo string, stopId string);
 
@@ -38,7 +47,11 @@ define stream TimeTableResponseUnstructuredStream(routeNo string, stopId string,
         @map(type='json',  @attributes('message:$.message'), fail.on.missing.attribute='false'), http.status.code='400')
 define stream TimeTableResponseUnstructuredStreamFailures(message string);
 
-from InputRouteStream
+from InputStream
+select 'abc' as destination, 'cde' as sourceFile
+insert into RequestStream;
+
+from ResponseStream2xx
 select routeNo
 insert all events into RouteStream;
 
