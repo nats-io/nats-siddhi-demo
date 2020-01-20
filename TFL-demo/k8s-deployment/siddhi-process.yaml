@@ -1,7 +1,7 @@
 apiVersion: siddhi.io/v1alpha2
 kind: SiddhiProcess
 metadata:
-  name: natsdemo
+  name: tfldemo
 
 spec:
   apps:

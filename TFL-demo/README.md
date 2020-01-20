@@ -111,7 +111,7 @@ Realtime bus arrival times: https://api.tfl.gov.uk/line/24/arrivals
         ```sh
         $ docker run \
             -p 9006:9090 \
-            -v <LOCAL_PATH_TO_PROMETHEUS_YAML>prometheus.yaml:/etc/prometheus/prometheus.yml \
+            -v <LOCAL_PATH_TO_PROMETHEUS_YAML>/prometheus.yaml:/etc/prometheus/prometheus.yml \
             prom/prometheus
         ```
     1. Now prometheus and Siddhi runner are connected. You can access promentheus server using `http://0.0.0.0:9006/` and execute queries such as `jvm_memory_heap_usage` and monitor the Siddhi apps.
@@ -162,13 +162,13 @@ Realtime bus arrival times: https://api.tfl.gov.uk/line/24/arrivals
 1. Set the `EMAIL, RECEIVER_EMAIL,` and `EMAIL_PASSWORD` environmental variables values in the `siddhi-process.yaml` file before the deployment using appropriate values.
 1. Install the Siddhi Process CR
     ```sh
-    $ kubectl apply -f siddhi-process.yaml
+    $ kubectl apply -f <NATS-SIDDHI-DEMO>/TFL-demo/k8s-deployment/siddhi-process.yaml
     ```
 
 1. Send events to trigger the process
 
     ```sh
-    curl --location --request POST 'http://siddhi/natsdemo-2/8011/arrival' \
+    curl --location --request POST 'http://siddhi/tfldemo-2/8011/arrival' \
     --header 'Content-Type: application/json' \
     --data-raw '{
         "routeNo": "24"
@@ -213,7 +213,7 @@ Realtime bus arrival times: https://api.tfl.gov.uk/line/24/arrivals
         ```
     1. Use Kubernetes port forwarding to expose the `9005` port in the deployment that you need to monitor.
         ```sh
-        $ kubectl port-forward deployment/natsdemo-1-0-8-2 9005:9005
+        $ kubectl port-forward deployment/tfldemo-2 9005:9005
         ```
     1. Start a prometheus docker.
         ```sh
