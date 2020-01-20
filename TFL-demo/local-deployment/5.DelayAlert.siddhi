@@ -16,7 +16,7 @@ define stream BusDelayStream(routeNo string, stopId string, stopName string, hou
 
 -- Email sink to send notifications
 @sink(type='email', username="${EMAIL}", address="${EMAIL}", password="${EMAIL_PASSWORD}", 
-      subject="Dealy Notification on Bus Route: {{routeNo}}", to="buddhik@wso2.com", port="465", ssl.enable="true", auth="true",
+      subject="Dealy Notification on Bus Route: {{routeNo}}", to="${RECEIVER_EMAIL}", port="465", ssl.enable="true", auth="true",
       @map(type='text', 
           @payload("""
 Hi Passengers,
