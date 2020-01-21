@@ -1,0 +1,38 @@
+@App:name("4.ArrivalInfo")
+@App:statistics(reporter = 'prometheus')
+@App:description("Receive and arrange bus arrival information.")
+
+/*
+    Input: Route numbers that need to get the arrival information.
+    Output: Calculated arrival time and push to ArrivalInfoStream.
+*/
+
+@source(type='inMemory', topic='ArrivalControl', @map(type='passThrough'))
+define stream ArrivalTriggerStream(routeNo string);
+
+@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/arrivals', method='GET', sink.id='arrivals', @map(type='json'))
+define stream ArrivalRouteStream(routeNo string);
+
+@source(
+    type='http-call-response', sink.id='arrivals',
+    @map(type='json', @attributes('trp:routeNo', 'naptanId', 'stationName', 'expectedArrival', 'timeToLive', 'timeToStation'), fail.on.missing.attribute='false'), 
+    http.status.code='200'
+)
+-- @sink(type='log')
+define stream ArrivalsResponseStream(routeNo string, stopId string, stopName string, expectedArrival string, timeToLive string, timeToStation int);
+
+@sink(type='inMemory', topic='ArrivalInfo', @map(type='passThrough'))
+define stream ArrivalInfoStream(routeNo string, stopId string, stopName string, arrivalHour int, arrivalMin int, timeToLiveHour int, timeToLiveMin int, timeToStation int);
+
+from ArrivalTriggerStream
+select *
+insert into ArrivalRouteStream;
+
+from ArrivalsResponseStream
+select routeNo, stopId, stopName,
+        time:extract('HOUR', expectedArrival, "yyyy-MM-dd'T'HH:mm:ss'Z'") as arrivalHour,
+        time:extract('MINUTE', expectedArrival, "yyyy-MM-dd'T'HH:mm:ss'Z'") as arrivalMin,
+        time:extract('HOUR', timeToLive, "yyyy-MM-dd'T'HH:mm:ss'Z'") as timeToLiveHour,
+        time:extract('MINUTE', timeToLive, "yyyy-MM-dd'T'HH:mm:ss'Z'") as timeToLiveMin,
+        timeToStation
+insert into ArrivalInfoStream;

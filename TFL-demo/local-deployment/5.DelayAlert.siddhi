@@ -1,0 +1,42 @@
+@App:name("5.DelayAlert")
+@App:statistics(reporter = 'prometheus')
+@App:description("Send email alerts to the passengers.")
+
+/*
+    Input: Delayed information about buses.
+    Output: Email alerts to the passengers, and store these details in a database.
+*/
+
+@source(type='inMemory', topic='BusDelay', @map(type='passThrough')) 
+define stream BusDelayStream(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+-- RDBMS data stores
+-- @Store(type="rdbms", datasource="TFL_DB")
+-- define table DelayDetails(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+-- Email sink to send notifications
+@sink(type='email', username="${EMAIL}", address="${EMAIL}", password="${EMAIL_PASSWORD}", 
+      subject="Dealy Notification on Bus Route: {{routeNo}}", to="${RECEIVER_EMAIL}", port="465", ssl.enable="true", auth="true",
+      @map(type='text', 
+          @payload("""
+Hi Passengers,
+    
+Please note that there is a {{timeDiff}} min delay in bus route {{routeNo}}. The bus will arrive to {{stopName}} at {{hour}}:{{minute}}.
+    
+Thank you,
+TFL.
+        """))) 
+@sink(type='log')
+define stream AlertStream(routeNo string, stopId string, stopName string, hour int, minute int, arrivalHour int, arrivalMin int, timeDiff double, status string);
+
+from BusDelayStream#unique:deduplicate(stopId, 30 sec)
+select *
+insert into DelayInfoStream;
+
+from DelayInfoStream
+select *
+insert into AlertStream;
+
+-- from DelayInfoStream
+-- select *
+-- insert into DelayDetails;

@@ -1,0 +1,68 @@
+@App:name("1.LoadBusTimeSchedule")
+@App:description("Load the bus time table for a given set of stops and send it to the next level via an intermediate stream.")
+
+/*
+    Input: CSV file which include the stop IDs.
+    Output: Push the bus schedule details to the BusScheduleStream.
+*/
+
+define trigger InputStream at 'start';
+
+@sink(type='http-call', downloading.enabled='false', publisher.url='https://raw.githubusercontent.com/BuddhiWathsala/nats-demo-csv/master/stops.csv', method='GET', sink.id='download-file', @map(type='json'))
+define stream RequestStream (destination String, sourceFile string);
+
+@source(type='http-call-response' , sink.id='download-file', http.status.code='200', @map(type='csv', event.grouping.enabled='true'))
+define stream ResponseStream2xx(routeNo string, bound string, id string, name string, lat double, lon double);
+
+@source(type='http-call-response' , sink.id='download-file', http.status.code='400' ,
+@map(type='text', regex.A='((.|\n)*)', @attributes(message='A[1]')))
+define stream ResponseStream4xx(message string);
+
+@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/stoppoints?app_id=5f318986&app_key=3d908692f8b7e55287191ddcbfb391ff', method='GET', sink.id='stops',
+        @map(type='json', fail.on.missing.attribute='false'), http.status.code='200')
+define stream RouteStream(routeNo string);
+
+@source(type='http-call-response', sink.id='stops', http.status.code='200', 
+        @map(type='json', @attributes('trp:routeNo', 'naptanId', 'commonName'), fail.on.missing.attribute='false'))
+define stream BusStopsStream(routeNo string, stopId string, stopName string);
+
+@source(type='http-call-response', sink.id='stops', http.status.code='4\d+', 
+        @map(type='json', fail.on.missing.attribute='false', @attributes('message:$.message')))
+define stream BusStopsStreamFail(message string);
+
+@sink(type='http-call', publisher.url='https://api.tfl.gov.uk/line/{{routeNo}}/timetable/{{stopId}}?app_id=5f318986&app_key=3d908692f8b7e55287191ddcbfb391ff', method='GET', sink.id='timetable',
+        @map(type='json'))
+define stream TimeTableRequestStream(routeNo string, stopId string);
+
+define stream TimeTableResponseStream(routeNo string, stopId string, dayRange string, knownJourneys string);
+
+@sink(type='inMemory', topic='BusSchedule', @map(type='passThrough'))
+define stream BusScheduleStream(routeNo string, stopId string, dayRange string, hour int, minute int);
+
+@source(type='http-call-response', sink.id='timetable',
+        @map(type='json', @attributes(routeNo='trp:routeNo', stopId='trp:stopId', jsonPayload='$'), fail.on.missing.attribute='false'), http.status.code='200')
+define stream TimeTableResponseUnstructuredStream(routeNo string, stopId string, jsonPayload string);
+
+@source(type='http-call-response', sink.id='timetable',
+        @map(type='json',  @attributes('message:$.message'), fail.on.missing.attribute='false'), http.status.code='400')
+define stream TimeTableResponseUnstructuredStreamFailures(message string);
+
+from InputStream
+select 'abc' as destination, 'cde' as sourceFile
+insert into RequestStream;
+
+from ResponseStream2xx
+select routeNo
+insert all events into RouteStream;
+
+from BusStopsStream
+select routeNo, stopId
+insert into TimeTableRequestStream;
+
+from TimeTableResponseUnstructuredStream[json:isExists(jsonPayload, '$.timetable')]#json:tokenize(jsonPayload, '$.timetable.routes[0].schedules', false)[not (jsonElement is null)]
+select routeNo, stopId, json:getString(jsonElement, "name") as dayRange,  json:getString(jsonElement, "knownJourneys") as knownJourneys
+insert into TimeTableResponseStream;
+
+from TimeTableResponseStream[not (knownJourneys is null)]#json:tokenize(knownJourneys, '$')
+select routeNo, stopId, dayRange, json:getInt(jsonElement, 'hour') as hour,  json:getInt(jsonElement, 'minute') as minute
+insert into BusScheduleStream;

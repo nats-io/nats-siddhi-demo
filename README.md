@@ -42,16 +42,14 @@ NATS deployment.
 
 Follow the Siddhi [instructions](https://siddhi.io/en/v5.1/docs/siddhi-as-a-kubernetes-microservice/#siddhi-51-as-a-kubernetes-microservice) to install Siddhi as a microservice
 into your Kubernetes cluster.
-
-#### Test Applications
-
 TODO
 
 ## Running the demonstration
 
-To run the demonstration...
+### TFL Demo
 
-TODO
+Refer to [this](./TFL-demo) to get more details about how to run the TFL demo.
+
 
 ## TODO
 
